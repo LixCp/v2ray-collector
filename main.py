@@ -5,8 +5,10 @@ import time
 import ipaddress  # To validate IP addresses
 import pycountry  # To get country information
 import geoip2.database  # To use the GeoLite2 database
+import socket  # To check IP and port reachability
 from urllib.parse import urlparse  # To parse URLs
 import json  # To handle JSON files
+import random  # To select random entries
 
 # Define path to the GeoLite2 Country database
 GEOIP_DB_PATH = 'GeoLite2-Country.mmdb'
@@ -99,8 +101,18 @@ def save_v2ray_links(links, filename):
             for link in new_links:
                 file.write(link + '\n')
 
-# Function to update text after the '#' symbol in each line of the file
-def update_text_after_hash(filename, vmess_filename, geoip_reader):
+# Function to check if IP and port are reachable
+def is_ip_port_reachable(ip, port, timeout=5):
+    try:
+        # Attempt to create a socket connection to the IP and port
+        with socket.create_connection((ip, int(port)), timeout) as sock:
+            return True
+    except (socket.timeout, socket.error) as e:
+        print(f"IP {ip} with port {port} is not reachable: {e}")
+        return False
+
+# Function to update text after the '#' symbol in each line of the file and check IP and port
+def update_text_after_hash(filename, vmess_filename, geoip_reader, output_file='reachable_links.txt'):
     # Read all lines from the file
     with open(filename, 'r', encoding='utf-8') as file:
         lines = file.readlines()
@@ -108,6 +120,7 @@ def update_text_after_hash(filename, vmess_filename, geoip_reader):
     # List to hold modified lines
     modified_lines = []
     vmess_lines = []  # To store lines that start with vmess://
+    reachable_lines = []  # To store reachable IP and port lines
 
     # Process each line
     for line in lines:
@@ -115,25 +128,39 @@ def update_text_after_hash(filename, vmess_filename, geoip_reader):
             # Save vmess links to a separate file
             vmess_lines.append(line)
         elif '#' in line:
-            # Split the line to extract IP or domain between @ and :
-            before_hash, after_hash = line.split('#', 1)
-            parsed_url = urlparse(before_hash.split('@')[-1].split(':')[0])
-
-            # Check if the extracted part is a valid IP address
             try:
-                ip = ipaddress.ip_address(parsed_url.path)
-                country_code = get_country_by_ip(ip, geoip_reader)
-                flag_emoji = country_code_to_flag(country_code)
-                new_text = f"{flag_emoji} {country_code}"
-            except ValueError:
-                # If not a valid IP, use the existing after_hash content
-                new_text = after_hash.strip()
+                # Split the line to extract IP or domain between @ and :
+                before_hash, after_hash = line.split('#', 1)
+                ip_port = before_hash.split('@')[-1].split(':')
+                
+                if len(ip_port) != 2:
+                    print(f"Skipping line due to invalid format: {line}")
+                    continue
 
-            # Remove 't.me' or 'کانال' from the text after '#'
-            if 't.me' in new_text or 'کانال' in new_text:
-                new_text = f"{flag_emoji} {country_code}"
+                ip, port = ip_port  # Extract IP and port
 
-            modified_lines.append(f"{before_hash}#{new_text}\n")
+                # Check if the extracted part is a valid IP address
+                try:
+                    ip = ipaddress.ip_address(ip)
+                    if is_ip_port_reachable(str(ip), port):
+                        reachable_lines.append(line)  # If reachable, add to the reachable list
+                        if len(reachable_lines) >= 25:  # Limit to 25 valid IPs
+                            break
+                    country_code = get_country_by_ip(ip, geoip_reader)
+                    flag_emoji = country_code_to_flag(country_code)
+                    new_text = f"{flag_emoji} {country_code}"
+                except ValueError:
+                    # If not a valid IP, use the existing after_hash content
+                    new_text = after_hash.strip()
+
+                # Remove 't.me' or 'کانال' from the text after '#'
+                if 't.me' in new_text or 'کانال' in new_text:
+                    new_text = f"{flag_emoji} {country_code}"
+
+                modified_lines.append(f"{before_hash}#{new_text}\n")
+            except Exception as e:
+                print(f"Error processing line: {line}. Error: {e}")
+                continue
         else:
             # If there's no '#', keep the line unchanged
             modified_lines.append(line)
@@ -142,9 +169,16 @@ def update_text_after_hash(filename, vmess_filename, geoip_reader):
     with open(filename, 'w', encoding='utf-8') as file:
         file.writelines(modified_lines)
 
-    # Write vmess links to a separate file
+    # Write vmess links to a separate file with a limit of 25 random entries
+    if len(vmess_lines) > 25:
+        vmess_lines = random.sample(vmess_lines, 25)
     with open(vmess_filename, 'w', encoding='utf-8') as vmess_file:
         vmess_file.writelines(vmess_lines)
+    
+    # Write reachable IP and port lines to a separate file
+    with open(output_file, 'w', encoding='utf-8') as output:
+        output.writelines(reachable_lines)
+
 
 def main():
     # Download GeoLite2 Country database if not already present
@@ -169,10 +203,10 @@ def main():
 
     # Save the extracted links to a file
     output_file = '2.txt'
-    vmess_file = 'vmess_links.txt'
+    vmess_file = 'vmess.txt'
     save_v2ray_links(all_links, output_file)
 
-    # Update text after '#' symbol in the file and handle vmess links separately
+    # Update text after '#' symbol in the file, handle vmess links separately, and check IP and port
     update_text_after_hash(output_file, vmess_file, geoip_reader)
 
     # Close the GeoLite2 database reader
